@@ -1,0 +1,11 @@
+# Python virtualenv used by the Frida fallback route
+.venv/
+__pycache__/
+*.pyc
+
+# Build intermediates, and the throwaway debug signing key
+# (never commit a keystore, even a debug one)
+lsposed-module/build/
+
+# APK v4 signature blobs, derived from the APK
+*.idsig
