@@ -232,3 +232,8 @@ Enable the module in LSPosed and scope it to `net.omobio.dialogsc`. Do not tick
 
 For use on devices you own, and for security research on the app you are
 testing. Not affiliated with Dialog Axiata or Omobio.
+
+## License
+
+[MIT](LICENSE)
+
