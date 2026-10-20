@@ -9,3 +9,4 @@ lsposed-module/build/
 
 # APK v4 signature blobs, derived from the APK
 *.idsig
+lsposed-module/.debug.keystore
