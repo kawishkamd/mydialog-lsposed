@@ -185,9 +185,19 @@ print `!!` or propose a wrong-shaped method, and you have to work through
 
 ## Build
 
-The build no longer needs a full JDK - it can compile with the Eclipse compiler
-on top of a bare JRE. It needs an Android `build-tools` directory, an
-`android.jar` and the Xposed API 82 jar:
+**The APK is not committed** (`*.apk` is ignored - binaries do not belong in git
+history). Build it yourself: a clean clone compiles to a byte-identical
+`classes.dex`.
+
+You need an Android SDK `build-tools` directory, an `android.jar`, and the
+Xposed API 82 jar. Nothing fetches them for you; get them once and point the
+build at them. The defaults are where this repo's author keeps them:
+
+| var | default | where to get it |
+|---|---|---|
+| `BUILD_TOOLS` | `~/.cache/mydialog/android/build-tools` | `sdkmanager "build-tools;34.0.0"` |
+| `ANDROID_JAR` | `~/.cache/mydialog/android/android.jar` | `sdkmanager "platforms;android-30"`, then `platforms/android-30/android.jar` (API ≥ 30 is fine) |
+| `XPOSED_API` | `~/.cache/mydialog/android/api-82.jar` | the `de.robv.android.xposed:api:82` artifact. Mirror: `https://maven.aliyun.com/repository/public/de/robv/android/xposed/api/82/api-82.jar` (sha256 `f48c635f1c7469fdec0e00ad2ea0b7a6b2f5b55065784a35b7ca3a84615e8e25`) |
 
 ```sh
 BUILD_TOOLS=/path/to/build-tools \
@@ -197,13 +207,28 @@ JAVA=java ECJ_JAR=/path/to/ecj-3.36.0.jar \
 lsposed-module/build.sh
 ```
 
-With a JDK installed, drop `ECJ_JAR` and it uses `javac`. Output is the signed
-`lsposed-module/MyDialogBypass.apk` (minSdk 27, targetSdk 30). The signing key
-lives in `lsposed-module/.debug.keystore` so it survives clean builds.
+With a JDK installed, drop `ECJ_JAR` and it uses `javac`. Either way `java`,
+`keytool` and `zip` must be on `PATH` (the SDK's `aapt2`/`d8`/`apksigner` are
+scripts that shell out to `java`). Output is `lsposed-module/MyDialogBypass.apk`
+(minSdk 27, targetSdk 30).
 
-Install it, enable it in LSPosed, and scope it to `net.omobio.dialogsc`. Do not
-tick "System Framework" - restarting the LSPosed daemon post-boot restarts
-zygote.
+### Signing - read this before installing
+
+The first build creates `lsposed-module/.debug.keystore`, which is also ignored
+(never commit a keystore, even a debug one). It is **not** in the repo, so:
+
+- a fresh clone generates a **new signing key**, and
+- Android refuses to update an installed app across a different key, so if you
+  already installed a module built somewhere else, uninstall it first:
+  `adb uninstall lk.mydialog.bypass`.
+
+Keep `.debug.keystore` between builds - or copy it between machines, or set
+`KEYSTORE=` - to keep one key.
+
+### Install
+
+Enable the module in LSPosed and scope it to `net.omobio.dialogsc`. Do not tick
+"System Framework" - restarting the LSPosed daemon post-boot restarts zygote.
 
 ## Frida route
 

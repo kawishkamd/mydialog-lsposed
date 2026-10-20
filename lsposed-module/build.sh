@@ -3,8 +3,8 @@
 # Builds MyDialogBypass.apk (an LSPosed/Xposed module) without Android Studio.
 #
 # Needs a Java compiler plus an Android SDK "build-tools" dir, an android.jar
-# and the Xposed API 82 jar.  Set them via env vars if they are not in the
-# default location (which is where the helper in this repo puts them):
+# and the Xposed API 82 jar.  Nothing fetches these for you (see the README
+# "Build" section); point the vars below at your copies:
 #
 #   BUILD_TOOLS   e.g. ~/.cache/mydialog/android/build-tools
 #   ANDROID_JAR   e.g. ~/.cache/mydialog/android/android.jar
