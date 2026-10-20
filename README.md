@@ -111,24 +111,77 @@ The module no longer fails silently: it logs the app version, every binding,
 and shouts if a critical hook (integrity or kill-path) did not bind:
 
 ```
-MyDialogBypass: loading net.omobio.dialogsc v18.6.5 (1865) in net.omobio.dialogsc
+MyDialogBypass: loading net.omobio.dialogsc v18.6.5 (113010021) in net.omobio.dialogsc
 MyDialogBypass:   bound   Settings.Secure.getInt(CR,String,int)
 MyDialogBypass:   bound   File.exists()
 MyDialogBypass:   bound   MainActivity.b2()
 MyDialogBypass:   bound   MainActivity.A1()
 ...
-MyDialogBypass: armed v18.6.5 (1865): 31 bound, 0 skipped
+MyDialogBypass: armed v18.6.5 (113010021): 31 bound, 0 skipped
 MyDialogBypass: all critical hooks bound
 ```
 
-After an app update, if you see
+## When MyDialog updates
 
-```
-MyDialogBypass: !!! CRITICAL hook(s) missing on v18.7.0 (…)
+R8 renames every app member on each release, so the `M_*` arrays go stale the
+moment Dialog ships a new version. Nothing breaks silently: the module logs
+`!!! CRITICAL hook(s) missing` when the integrity or kill-path tier fails to
+bind.
+
+Two facts make recovery mechanical:
+
+- **string literals are never renamed**, and
+- **`MainActivity` is the launcher activity**, declared in `AndroidManifest.xml`,
+  so R8 keeps its name. The `MA` constant in `Module.java` rarely needs
+  touching.
+
+### Recovery procedure
+
+```sh
+# 1. pull the new build off the device (tap "update" first, or grab the APK)
+adb shell su -c 'cp "$(pm path net.omobio.dialogsc | cut -d: -f2)" /sdcard/mydialog.apk'
+adb pull /sdcard/mydialog.apk
+
+# 2. rediscover the hook targets (decompiles only MainActivity)
+lsposed-module/tools/find-gates.py --apk mydialog.apk
+
+# 3. paste the printed M_* lines over the stale ones at the top of
+#    lsposed-module/src/lk/mydialog/bypass/Module.java
+
+# 4. rebuild, reinstall, and watch the module log
+lsposed-module/build.sh
+adb install -r lsposed-module/MyDialogBypass.apk
+adb logcat -s MyDialogBypass
 ```
 
-add the new obfuscated names to the `M_*` lists at the top of
-`lsposed-module/src/lk/mydialog/bypass/Module.java`.
+`find-gates.py` needs `jadx` on `PATH` (or `JADX=/path/to/jadx`) and a JRE
+(auto-detected, or `JAVA_HOME=/path/to/jre`). It keys off
+strings only a given gate contains (`verifyIntegrityToken`, `adb_enabled`,
+`magisk`, `TracerPid`, `XposedBridge`, …) and attributes each hit to its
+enclosing *named* method - so a `finish()` inside an anonymous `Runnable` is
+still credited to the method that posted it. It also derives
+`M_INTEGRITY_CONSUMER` and `M_MONITOR_KILL` structurally: they are simply the
+methods that call the kill funnel (`A1`/`B1`). `--java MainActivity.java`
+re-analyses an existing jadx dump without decompiling again.
+
+Self-check: pointed at 18.6.5 it reproduces the arrays exactly
+(`b2` / `A1` / `B1` / `U1,V1` / `P1` / `W1`).
+
+Read the output, don't just paste it. A *rename* is mechanical, but a
+*structural* change - the funnel stops calling `finish()`, the integrity POST
+moves into native code, a new probe feeds a different kill path - makes the tool
+print `!!` or propose a wrong-shaped method, and you have to work through
+[The two gates](#the-two-gates) by hand.
+
+### What survives an update with no edit
+
+- **Tier 4 (framework)** - `Settings.Secure.getInt`, `File.exists`,
+  `ActivityManager.isUserAMonkey`: Android names, not the app's.
+- **The guard rails.** If the kill path fails to bind, the module arms a
+  conditional `Activity.finish()` suppressor, so the app usually still starts
+  long enough for you to fix the names.
+- **The probe map above** stays a useful guide: `D1`/`F1` are still "the two
+  `Settings.Secure.getInt` wrappers", whatever they get renamed to.
 
 ## Build
 
