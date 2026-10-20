@@ -1,6 +1,0 @@
-# Frida fallback route (run_mydialog.sh / run_bypass.py)
-#
-# Pinned deliberately: frida 17.x crashed on the test device with
-#   frida_sigchain_compat_validate_signal: assertion failed
-# 16.7.19 is the version the device-side frida-server16 matches.
-frida==16.7.19

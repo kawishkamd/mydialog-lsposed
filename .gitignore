@@ -1,5 +1,3 @@
-# Python virtualenv used by the Frida fallback route
-.venv/
 __pycache__/
 *.pyc
 

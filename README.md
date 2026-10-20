@@ -4,12 +4,10 @@ Bypasses the root / tamper gate and the Play Integrity gate of **MyDialog**
 (`net.omobio.dialogsc`), a React Native app, so it runs normally on a rooted
 device.
 
-Two interchangeable routes:
-
-| route | file | needs | notes |
-|---|---|---|---|
-| **LSPosed module** | `lsposed-module/` | Magisk + LSPosed, no PC | on-device, persistent, works with the PC disconnected |
-| Frida script | `bypass.js` | a PC + `frida-server` | attach-only (spawn does not work on the test device) |
+It ships as an **LSPosed module** (`lsposed-module/`), which needs Magisk +
+LSPosed and nothing else - no PC, no `frida-server`, no terminal. The hooks arm
+on the device whenever the app is opened and stay armed until you disable the
+module.
 
 Ground truth below is from **MyDialog 18.6.5** (`classes5.dex`).
 
@@ -229,18 +227,6 @@ Keep `.debug.keystore` between builds - or copy it between machines, or set
 
 Enable the module in LSPosed and scope it to `net.omobio.dialogsc`. Do not tick
 "System Framework" - restarting the LSPosed daemon post-boot restarts zygote.
-
-## Frida route
-
-```sh
-pip install -r requirements.txt          # frida==16.7.19, pinned on purpose
-adb push frida-server-16.7.19-android-arm64 /data/local/tmp/frida-server
-adb shell "su -c '/data/local/tmp/frida-server &'"
-frida -U -n MyDialog -l bypass.js
-```
-
-`bypass.js` is attach-only and installs the equivalent runtime hooks (still
-using the 18.6.5 method names).
 
 ## Disclaimer
 
