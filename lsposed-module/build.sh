@@ -29,6 +29,17 @@ JAVA="${JAVA:-java}"
 JAVAC="${JAVAC:-javac}"
 ECJ_JAR="${ECJ_JAR:-}"
 
+if ! command -v "$JAVA" >/dev/null 2>&1; then
+    for cand in "${XDG_CACHE_HOME:-$HOME/.cache}/mydialog/jdk" /usr/lib/jvm/*; do
+        if [ -x "$cand/bin/java" ]; then
+            JAVA="$cand/bin/java"
+            JAVAC="$cand/bin/javac"
+            export PATH="$cand/bin:$PATH"
+            break
+        fi
+    done
+fi
+
 AAPT2="$BUILD_TOOLS/aapt2"
 D8="$BUILD_TOOLS/d8"
 ZIPALIGN="$BUILD_TOOLS/zipalign"

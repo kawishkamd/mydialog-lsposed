@@ -105,12 +105,12 @@ def find_java_home():
     return None
 
 
-def decompile(apk):
+def decompile(apk, cls_name=MA):
     jadx = find_jadx()
     if not jadx:
         sys.exit("jadx not found; set JADX=/path/to/jadx")
     out = tempfile.mkdtemp(prefix="findgates.")
-    cmd = [jadx, "--no-res", "--single-class", MA, "-d", out, apk]
+    cmd = [jadx, "--no-res", "--rename-flags", "none", "--single-class", cls_name, "-d", out, apk]
     print("[*] %s" % " ".join(cmd), file=sys.stderr)
     env = dict(os.environ)
     if not shutil.which("java"):
@@ -122,11 +122,12 @@ def decompile(apk):
         else:
             sys.exit("no java on PATH and no JRE found; set JAVA_HOME")
     subprocess.run(cmd, check=False, env=env)
+    target_leaf = cls_name.split(".")[-1] + ".java"
     for root, _, files in os.walk(out):
         for f in files:
-            if f == "MainActivity.java":
+            if f == target_leaf:
                 return os.path.join(root, f)
-    sys.exit("jadx did not produce MainActivity.java")
+    sys.exit("jadx did not produce %s" % target_leaf)
 
 
 def frames(lines):
@@ -259,31 +260,57 @@ def main():
                 monitors.append((f["name"], f["start"]))
                 seen.add(f["name"])
 
+    # 18.6.6+ synthetic / outlined runner detection
+    synthetic_runners = []
+    thread_matches = re.findall(r"new\s+([A-Za-z0-9_]+)\s*\(\s*this\s*,\s*(\d+)\s*\)\.start\(\)", "\n".join(lines))
+    runnable_matches = re.findall(r"new\s+Thread\s*\(\s*new\s+([A-Za-z0-9_]+)\s*\(\s*this\s*,\s*(\d+)\s*\)\s*\)\.start\(\)", "\n".join(lines))
+
     print("\n" + "=" * 72)
     print("SUGGESTED EDITS for Module.java")
     print("=" * 72)
     if integ:
         print('  M_INTEGRITY = {%s};' % ", ".join('"%s"' % n for n in integ))
     else:
-        print("  M_INTEGRITY = {};   /* !! NOT FOUND -- inspect by hand */")
+        if runnable_matches:
+            cls, case = runnable_matches[0]
+            print('  /* 18.6.6+ R8 outlined Play Integrity requester: a.%s (case %s) */' % (cls, case))
+        else:
+            print("  M_INTEGRITY = {};   /* !! NOT FOUND -- inspect by hand */")
+
     print(('  M_INTEGRITY_CONSUMER = {%s};' % ", ".join('"%s"' % n for n, _ in consumers))
           if consumers else "  M_INTEGRITY_CONSUMER = {};   /* !! none -- inspect by hand */")
     print(('  M_KILL1     = {%s};' % ", ".join('"%s"' % n for n in k1)) if k1
           else "  M_KILL1     = {};   /* !! NOT FOUND */")
     print(('  M_KILL2     = {%s};' % ", ".join('"%s"' % n for n in k2)) if k2
           else "  M_KILL2     = {};   /* !! NOT FOUND */")
+
+    if thread_matches:
+        cls, case0 = thread_matches[0]
+        cases = [c for c_name, c in thread_matches if c_name == cls]
+        print('  /* 18.6.6+ R8 outlined tamper thread: a.%s (cases: %s) */' % (cls, ", ".join(cases)))
+
     if tst:
         print('  M_TOAST     = {%s};' % ", ".join('"%s"' % n for n in tst))
     print(('  M_MONITOR_KILL = {%s};' % ", ".join('"%s"' % n for n, _ in monitors))
           if monitors else "  M_MONITOR_KILL = {};   /* !! none -- inspect by hand */")
 
-    checks, skip = [], set(integ) | set(funnel) | set(tst) | {n for n, _ in consumers} | {n for n, _ in monitors}
+    checks_noarg, checks_with_ma = [], []
+    skip = set(integ) | set(funnel) | set(tst) | {n for n, _ in consumers} | {n for n, _ in monitors}
     for label, _ in ANCHORS:
-        for (n, _), _ in hits[label]:
-            if n not in checks and n not in skip:
-                checks.append(n)
-    if checks:
-        print('  M_CHECKS    = {%s};' % ", ".join('"%s"' % n for n in checks))
+        for (n, p), _ in hits[label]:
+            if n in skip:
+                continue
+            if "MainActivity" in p:
+                if n not in checks_with_ma:
+                    checks_with_ma.append(n)
+            else:
+                if n not in checks_noarg:
+                    checks_noarg.append(n)
+
+    if checks_noarg:
+        print('  M_CHECKS_NOARG   = {%s};' % ", ".join('"%s"' % n for n in checks_noarg))
+    if checks_with_ma:
+        print('  M_CHECKS_WITH_MA = {%s};' % ", ".join('"%s"' % n for n in checks_with_ma))
     print("\n  After install the module MUST log 'all critical hooks bound'.")
 
     if consumers or monitors:

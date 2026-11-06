@@ -9,27 +9,56 @@ LSPosed and nothing else - no PC, no `frida-server`, no terminal. The hooks arm
 on the device whenever the app is opened and stay armed until you disable the
 module.
 
-Ground truth below is from **MyDialog 18.6.5** (`classes5.dex`).
+Ground truth below covers both **MyDialog 18.6.5** and **MyDialog 18.6.6+** (`classes.dex` / `classes2.dex`).
 
 ## The two gates
 
 Both gates end the same way: show a `Toast` and call `finish()`.
 
-1. **Root / tamper** - `MainActivity.Z1()` on `onCreate`, re-run as
-   `MainActivity.a2(boolean)` on every `onResume`. It ORs together ~13 probes.
-2. **Integrity** - `MainActivity.z1()` → `T1()` asks Play Integrity for a
-   token, `b2()` POSTs it to
-   `https://selfcare.dialog.lk/scapp_6_0_1/index.php?r=/scapp/devices/verifyIntegrityToken`
-   and acts on `{"success": …}`.
+1. **Root / tamper**:
+   - In **18.6.5**: `MainActivity.Z1()` on `onCreate`, re-run as `MainActivity.a2(boolean)` on every `onResume`. Evaluates ~13 probes.
+   - In **18.6.6+**: Outlined into `a.cs0 extends Thread` (`case 0` on `onCreate`, `case 1` on `onResume`). Evaluates probes and calls `MainActivity.finish()` via toast runnable `a.Yj` (`case 7`).
+2. **Integrity**:
+   - In **18.6.5**: `MainActivity.z1()` → `T1()` asks Play Integrity for a token, `b2()` POSTs it to `https://selfcare.dialog.lk/scapp_6_0_1/index.php?r=/scapp/devices/verifyIntegrityToken` and `P1(boolean)` acts on the verdict.
+   - In **18.6.6+**: `MainActivity.onCreate()` spawns `new Thread(new a.Pq0(this, 5)).start()`. The token callback spawns `new Thread(new a.nb0(MainActivity, token, nonce, 8)).start()`, which POSTs to Dialog API and posts `new a.Ja(MainActivity, success, 7)` to `runOnUiThread`.
 
 ```
+v18.6.5:
 Z1() / a2()                        z1() -> T1() -> R1() -> Q1() -> b2()
    |  N1 J1 E1 L1 Utils.e                (Play Integrity token)      |
    |  D1 F1 M1 G1 I1                                                 |
    +-----------------------> A1(int) / B1(int, bool) <---------------+
                                     |
                               Toast + finish()
+
+v18.6.6+:
+a.cs0 (case 0 / 1)                 a.Pq0 (case 5) -> a.nb0 (case 8)
+   |  r m n l o p q s                     (Play Integrity token)      |
+   |  HV.r Nm1.a                                                     |
+   +-----------------------> a.Ja(case 7) / a.Yj(case 7) <-----------+
+                                    |
+                              Toast + finish()
 ```
+
+### Verified probe map (18.6.6)
+
+| class & method | what it actually does |
+|---|---|
+| `a.Pq0.run()` (case 5) | Play Integrity token request on startup (suppressed) |
+| `a.Ja.<init>()` (case 7) | Play Integrity verdict consumer (verdict forced to `success=true`) |
+| `a.cs0.run()` (cases 0 & 1) | Background thread root/tamper runner (suppressed) |
+| `a.Yj.run()` (case 7) | Security toast runner (suppressed) |
+| `Activity.finish()` | Universal security finish suppressor on `MainActivity` |
+| `MainActivity.r()` | `File.exists()` su paths check |
+| `MainActivity.m(MainActivity)` | Magisk check (/proc/self/maps, packages, files) |
+| `MainActivity.n()` | Superuser packages check |
+| `MainActivity.l(MainActivity)` | Frida check (/proc/self/maps, ports, ps, files) |
+| `MainActivity.o()` | Frida files in `/` |
+| `MainActivity.p()` | Frida socket connect (`127.0.0.1:27042`..`27046`) |
+| `MainActivity.q()` | Emulator / monkey check |
+| `MainActivity.s()` | Dalvik taint check |
+| `a.HV.r()` | TracerPid debug probe |
+| `a.Nm1.a(Context)` | RootBeer check |
 
 ### Verified probe map (18.6.5)
 
@@ -90,33 +119,35 @@ Two notes that matter for future maintenance:
 
 Four tiers, in order of stability:
 
-1. **Integrity** - `b2` → `true`. Because `b2` *is* the network call, this both
-   neutralises the verdict and stops the real (failing) Play Integrity token
-   from leaving the device. `P1(boolean)` (the verdict consumer) is a second,
-   independent hook point if `b2` is renamed.
-2. **Kill path** - `A1` / `B1` are the funnel every probe feeds into, so
-   hooking them keeps the app alive regardless of which probe names change. If
-   both fail to bind, a guarded `Activity.finish()` fallback is armed (it only
-   suppresses `finish()` when the call stack contains `MainActivity`).
-3. **Checks** - the individual probes, best-effort. Their obfuscated names
-   churn every release.
+1. **Integrity** -
+   - In 18.6.5: `b2` → `true`. Because `b2` *is* the network call, this neutralises the verdict and stops the failing Play Integrity token from leaving the device. `P1(boolean)` is a secondary verdict consumer hook.
+   - In 18.6.6+: `a.Pq0` (case 5) suppresses the integrity token request; `a.Ja` (case 7) forces `success=true` in the verdict consumer.
+2. **Kill path** -
+   - In 18.6.5: `A1` / `B1` funnels in `MainActivity`.
+   - In 18.6.6+: `a.cs0.run()` (cases 0 & 1) tamper threads and `a.Yj.run()` (case 7) toast runner are suppressed. Universal `Activity.finish()` suppressor on `MainActivity` blocks kills from background threads or security check callers.
+3. **Checks** - individual probes, best-effort. In 18.6.5: `D1`, `F1`, `M1`, etc. In 18.6.6+: `r`, `m`, `n`, `l`, `o`, `p`, `q`, `s`, `a.HV.r`, `a.Nm1.a`.
 4. **Framework** - `Settings.Secure.getInt` (`adb_enabled`,
   `development_settings_enabled`), `File.exists` (curated root/magisk/frida
    path list) and `ActivityManager.isUserAMonkey()`. These names never change,
    so this tier survives app updates on its own.
 
-The module no longer fails silently: it logs the app version, every binding,
-and shouts if a critical hook (integrity or kill-path) did not bind:
+The module logs the app version, every binding, and shouts if a critical hook (integrity or kill-path) did not bind:
 
 ```
-MyDialogBypass: loading net.omobio.dialogsc v18.6.5 (113010021) in net.omobio.dialogsc
-MyDialogBypass:   bound   Settings.Secure.getInt(CR,String,int)
+MyDialogBypass: loading net.omobio.dialogsc v18.6.6 (1130100230) in net.omobio.dialogsc
+MyDialogBypass:   bound   Settings.Secure.getInt(CR,String)
 MyDialogBypass:   bound   File.exists()
-MyDialogBypass:   bound   MainActivity.b2()
-MyDialogBypass:   bound   MainActivity.A1()
+MyDialogBypass:   bound   a.Pq0.run() [Play Integrity requester]
+MyDialogBypass:   bound   a.Ja.<init>() [integrity verdict consumer]
+MyDialogBypass:   bound   a.cs0.run() [root/tamper runner]
+MyDialogBypass:   bound   a.Yj.run() [security toast runner]
+MyDialogBypass:   bound   Activity.finish() [security suppressor]
 ...
-MyDialogBypass: armed v18.6.5 (113010021): 31 bound, 0 skipped
+MyDialogBypass: armed v18.6.6 (1130100230): 32 bound, 23 skipped
 MyDialogBypass: all critical hooks bound
+MyDialogBypass:   suppressed a.cs0.run(case 0) [root/tamper thread]
+MyDialogBypass:   suppressed a.Pq0.run(case 5) [Play Integrity requester]
+MyDialogBypass:   suppressed a.cs0.run(case 1) [root/tamper thread]
 ```
 
 ## When MyDialog updates

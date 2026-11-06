@@ -2,6 +2,7 @@ package lk.mydialog.bypass;
 
 import android.content.ContentResolver;
 import android.content.Context;
+import android.os.Looper;
 
 import java.io.File;
 import java.util.Arrays;
@@ -18,32 +19,21 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * MyDialog (net.omobio.dialogsc) root/tamper + integrity bypass.
  *
- * Ground truth is v18.6.5, refactored into four tiers so an app update cannot
- * silently brick the bypass again:
+ * Supports both v18.6.5 and v18.6.6+ (R8 synthetic Runnable refactor):
  *
- *   1. INTEGRITY  MainActivity.b2(String,String) *is* the POST to
- *                 /scapp/devices/verifyIntegrityToken -- replacing it makes the
- *                 client trust the verdict AND stops the (real, failing) Play
- *                 Integrity token from ever leaving the device. MainActivity.P1
- *                 (the verdict consumer) is a second, independent hook point.
+ *   1. INTEGRITY  In 18.6.5: MainActivity.b2(String,String) POST.
+ *                 In 18.6.6: a.Pq0 (case 5) requests Play Integrity token;
+ *                 a.Ja (case 7) consumes verdict (forced to success=true).
  *
- *   2. KILL PATH  Z1()/a2() run every probe and then funnel into exactly one of
- *                 A1(int)/B1(int,boolean) -> toast + finish(). Hooking the
- *                 funnel keeps the app alive no matter which probe names change.
- *                 A guarded Activity.finish() fallback is armed only if BOTH
- *                 funnels fail to bind.
+ *   2. KILL PATH  In 18.6.5: A1(int)/B1(int,boolean) funnels in MainActivity.
+ *                 In 18.6.6: a.cs0 tamper thread and a.Yj toast runnable.
+ *                 Universal Activity.finish() suppressor on MainActivity blocks
+ *                 any security-originated kill.
  *
- *   3. CHECKS     The individual probes. Their obfuscated names churn every
- *                 release; the M_* lists below are where new names get added.
+ *   3. CHECKS     Individual probes on MainActivity (l, m, n, o, p, q, r, s)
+ *                 and external probe helpers (a.HV.r TracerPid, a.Nm1.a RootBeer).
  *
- *   4. FRAMEWORK  Settings.Secure.getInt / File.exists / isUserAMonkey. These
- *                 framework names are stable forever, so this tier survives app
- *                 updates on its own for the adb, dev-options, su/magisk/frida
- *                 file and monkey checks.
- *
- * Every hook is logged, and the module shouts if a critical hook did not bind,
- * so a version bump shows up as an obvious line in the LSPosed log instead of a
- * silent failure.
+ *   4. FRAMEWORK  Settings.Secure.getInt / File.exists / isUserAMonkey.
  */
 public class Module implements IXposedHookLoadPackage {
 
@@ -56,19 +46,31 @@ public class Module implements IXposedHookLoadPackage {
     private static boolean criticalMissing;
 
     /* ---- 1. integrity verdict ------------------------------------------- */
-    /* b2(String token, String nonce) -> boolean : the POST itself            */
+    /* 18.6.5: b2(String token, String nonce) -> boolean : the POST itself    */
     private static final String[] M_INTEGRITY = {"b2"};
-    /* P1(boolean ok) -> void : the verdict consumer (second hook point)      */
+    /* 18.6.5: P1(boolean ok) -> void : the verdict consumer                  */
     private static final String[] M_INTEGRITY_CONSUMER = {"P1"};
 
     /* ---- 2. kill path (choke point) ------------------------------------- */
+    /* 18.6.5 funnels                                                        */
     private static final String[] M_KILL1 = {"A1"};             /* void(int)   */
     private static final String[] M_KILL2 = {"B1"};             /* void(int,boolean) */
     private static final String[] M_TOAST = {"U1", "V1"};       /* void(int)   */
     private static final String[] M_MONITOR_KILL = {"W1"};      /* void()      */
 
     /* ---- 3. individual root / tamper probes ----------------------------- */
-    private static final String[] M_CHECKS = {
+    /* 18.6.6+ probes on MainActivity with 0 params -> boolean               */
+    private static final String[] M_CHECKS_1866_NOARG = {
+            "n", "o", "p", "q", "r", "s"
+    };
+
+    /* 18.6.6+ probes on MainActivity taking MainActivity -> boolean         */
+    private static final String[] M_CHECKS_1866_WITH_MA = {
+            "l", "m"
+    };
+
+    /* 18.6.5 probes on MainActivity (no params -> boolean)                  */
+    private static final String[] M_CHECKS_1865 = {
             "N1", "J1", "E1", "L1", "D1", "F1", "M1", "G1", "I1",
             "H1", "O1", "x1", "y1"
     };
@@ -140,6 +142,115 @@ public class Module implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             skipped++;
             XposedBridge.log(TAG + "  absent  " + className + "." + name + "()");
+        }
+    }
+
+    /* ===================================================================== */
+    /*  18.6.6+ synthetic runnable hooks                                     */
+    /* ===================================================================== */
+
+    private static boolean hookCs0(ClassLoader cl) {
+        try {
+            Class<?> cls = XposedHelpers.findClass("a.cs0", cl);
+            XposedHelpers.findAndHookMethod(cls, "run", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    try {
+                        int a = XposedHelpers.getIntField(p.thisObject, "a");
+                        if (a == 0 || a == 1) {
+                            XposedBridge.log(TAG + "  suppressed a.cs0.run(case " + a + ") [root/tamper thread]");
+                            p.setResult(null);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            bound++;
+            XposedBridge.log(TAG + "  bound   a.cs0.run() [root/tamper runner]");
+            return true;
+        } catch (Throwable t) {
+            skipped++;
+            XposedBridge.log(TAG + "  absent  a.cs0.run()");
+            return false;
+        }
+    }
+
+    private static boolean hookPq0(ClassLoader cl) {
+        try {
+            Class<?> cls = XposedHelpers.findClass("a.Pq0", cl);
+            XposedHelpers.findAndHookMethod(cls, "run", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    try {
+                        int a = XposedHelpers.getIntField(p.thisObject, "a");
+                        if (a == 5) {
+                            XposedBridge.log(TAG + "  suppressed a.Pq0.run(case 5) [Play Integrity requester]");
+                            p.setResult(null);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            bound++;
+            XposedBridge.log(TAG + "  bound   a.Pq0.run() [Play Integrity requester]");
+            return true;
+        } catch (Throwable t) {
+            skipped++;
+            XposedBridge.log(TAG + "  absent  a.Pq0.run()");
+            return false;
+        }
+    }
+
+    private static boolean hookJa(ClassLoader cl) {
+        try {
+            Class<?> cls = XposedHelpers.findClass("a.Ja", cl);
+            XposedHelpers.findAndHookConstructor(cls, Object.class, boolean.class, int.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    try {
+                        int type = (Integer) p.args[2];
+                        if (type == 7 && p.args[0] != null && MA.equals(p.args[0].getClass().getName())) {
+                            p.args[1] = Boolean.TRUE;
+                            XposedBridge.log(TAG + "  forced a.Ja integrity verdict success=true");
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            bound++;
+            XposedBridge.log(TAG + "  bound   a.Ja.<init>() [integrity verdict consumer]");
+            return true;
+        } catch (Throwable t) {
+            skipped++;
+            XposedBridge.log(TAG + "  absent  a.Ja.<init>()");
+            return false;
+        }
+    }
+
+    private static boolean hookYj(ClassLoader cl) {
+        try {
+            Class<?> cls = XposedHelpers.findClass("a.Yj", cl);
+            XposedHelpers.findAndHookMethod(cls, "run", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    try {
+                        int a = XposedHelpers.getIntField(p.thisObject, "a");
+                        Object c = XposedHelpers.getObjectField(p.thisObject, "c");
+                        if (a == 7 && c != null && MA.equals(c.getClass().getName())) {
+                            XposedBridge.log(TAG + "  suppressed security Toast in a.Yj.run()");
+                            p.setResult(null);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            bound++;
+            XposedBridge.log(TAG + "  bound   a.Yj.run() [security toast runner]");
+            return true;
+        } catch (Throwable t) {
+            skipped++;
+            XposedBridge.log(TAG + "  absent  a.Yj.run()");
+            return false;
         }
     }
 
@@ -232,36 +343,47 @@ public class Module implements IXposedHookLoadPackage {
     }
 
     /* ===================================================================== */
-    /*  2b. guarded finish() fallback (only armed if the funnels are gone)    */
+    /*  2b. guarded finish() suppressor on MainActivity                      */
     /* ===================================================================== */
 
-    private static boolean armFinishFallback(ClassLoader cl) {
+    private static boolean hookActivityFinish(ClassLoader cl) {
         try {
             XposedHelpers.findAndHookMethod("android.app.Activity", cl, "finish",
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) {
-                            if (calledFromMainActivity()) {
-                                XposedBridge.log(TAG + "  suppressed MainActivity.finish()");
-                                p.setResult(null);
+                            if (p.thisObject != null && MA.equals(p.thisObject.getClass().getName())) {
+                                if (isSecurityKill()) {
+                                    XposedBridge.log(TAG + "  suppressed security kill on MainActivity.finish()");
+                                    p.setResult(null);
+                                }
                             }
                         }
                     });
             bound++;
-            XposedBridge.log(TAG + "  bound   Activity.finish() [fallback]");
+            XposedBridge.log(TAG + "  bound   Activity.finish() [security suppressor]");
             return true;
         } catch (Throwable t) {
             skipped++;
-            XposedBridge.log(TAG + "  skipped Activity.finish() [fallback]");
+            XposedBridge.log(TAG + "  skipped Activity.finish(): " + t);
             return false;
         }
     }
 
-    private static boolean calledFromMainActivity() {
+    private static boolean isSecurityKill() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            return true;
+        }
         StackTraceElement[] st = new Throwable().getStackTrace();
-        int n = st.length < 24 ? st.length : 24;
+        int n = Math.min(st.length, 30);
         for (int i = 0; i < n; i++) {
-            if (MA.equals(st[i].getClassName())) {
+            String cn = st[i].getClassName();
+            String mn = st[i].getMethodName();
+            if (cn.contains("cs0") || cn.contains("Ja") || cn.contains("Yj")
+                    || cn.contains("Pq0") || cn.contains("Ve0") || cn.contains("nb0")) {
+                return true;
+            }
+            if (MA.equals(cn) && ("A1".equals(mn) || "B1".equals(mn) || "W1".equals(mn))) {
                 return true;
             }
         }
@@ -300,55 +422,80 @@ public class Module implements IXposedHookLoadPackage {
         /* tier 1: integrity */
         boolean integPost = bindFirst(ma, M_INTEGRITY, Boolean.TRUE, String.class, String.class);
         boolean integConsumer = bindFirst(ma, M_INTEGRITY_CONSUMER, null, boolean.class);
-        if (!integPost) {
-            if (integConsumer) {
-                XposedBridge.log(TAG + "  NOTE incomplete integrity: verdict is ignored, "
-                        + "but the Play Integrity token is still POSTed (b2 renamed?)");
-            } else {
-                criticalMissing = true;
-                XposedBridge.log(TAG + "  MISS integrity hooks " + Arrays.toString(M_INTEGRITY)
-                        + " / " + Arrays.toString(M_INTEGRITY_CONSUMER));
-            }
+        boolean integ1866Pq0 = hookPq0(cl);
+        boolean integ1866Ja = hookJa(cl);
+
+        boolean integCovered = integPost || (integ1866Pq0 && integ1866Ja) || integConsumer;
+        if (!integCovered) {
+            criticalMissing = true;
+            XposedBridge.log(TAG + "  MISS integrity hooks " + Arrays.toString(M_INTEGRITY)
+                    + " / " + Arrays.toString(M_INTEGRITY_CONSUMER) + " / a.Pq0 / a.Ja");
         }
 
-        /* tier 2: kill path (primary) */
+        /* tier 2: kill path (primary & fallback) */
         boolean kill1 = bindFirst(ma, M_KILL1, null, int.class);
         boolean kill2 = bindFirst(ma, M_KILL2, null, int.class, boolean.class);
-        if (!kill1 && !kill2) {
-            criticalMissing = true;
-            XposedBridge.log(TAG + "  MISS kill-path hooks " + Arrays.toString(M_KILL1)
-                    + " / " + Arrays.toString(M_KILL2) + " -> arming finish() fallback");
-            armFinishFallback(cl);
-        }
+        boolean killCs0 = hookCs0(cl);
+        hookYj(cl);
+        boolean finishSuppressed = hookActivityFinish(cl);
+
         bindFirst(ma, M_TOAST, null, int.class);
         bindFirst(ma, M_MONITOR_KILL, null);
 
-        /* tier 3: individual probes */
-        for (int i = 0; i < M_CHECKS.length; i++) {
-            bind(ma, M_CHECKS[i], Boolean.FALSE);
+        boolean killCovered = kill1 || kill2 || (killCs0 && finishSuppressed);
+        if (!killCovered) {
+            criticalMissing = true;
+            XposedBridge.log(TAG + "  MISS kill-path hooks");
         }
+
+        /* tier 3: individual probes */
+        for (int i = 0; i < M_CHECKS_1866_NOARG.length; i++) {
+            bind(ma, M_CHECKS_1866_NOARG[i], Boolean.FALSE);
+        }
+        for (int i = 0; i < M_CHECKS_1866_WITH_MA.length; i++) {
+            bind(ma, M_CHECKS_1866_WITH_MA[i], Boolean.FALSE, ma);
+        }
+        for (int i = 0; i < M_CHECKS_1865.length; i++) {
+            bindIfPresent(cl, MA, M_CHECKS_1865[i], Boolean.FALSE);
+        }
+
+        /* 18.6.6 external probes */
+        bindIfPresent(cl, "a.HV", "r", Boolean.FALSE);
+        bindIfPresent(cl, "a.Nm1", "a", Boolean.FALSE, Context.class);
 
         /* helpers used by the React Native bridge */
         bindIfPresent(cl, "net.omobio.dialogsc.Utils", "e", Boolean.FALSE, Context.class);
         bindIfPresent(cl, "net.omobio.dialogsc.support.lib.RootInfoCallable", "call", Boolean.FALSE);
 
-        /* legacy security package: dead in 18.6.5 (libsecurity.so is not even
-           shipped, so SecurityManagerAdvance cannot initialise) -- kept
-           defensively in case a future build wires it back up. */
+        /* legacy security package */
         bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityValidator",
                 "isSecure", Boolean.TRUE, Context.class);
         bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
                 "performComprehensiveSecurityCheck", Boolean.FALSE, Context.class);
         bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
                 "isProductionSecure", Boolean.TRUE, Context.class);
-        bindIfPresent(cl, "net.omobio.dialogsc.SecurityManagerAdvance",
-                "performSecurityCheck", Boolean.FALSE);
-        bindIfPresent(cl, "net.omobio.dialogsc.SecurityManagerAdvance",
-                "checkFridaLibs", Boolean.FALSE);
-        bindIfPresent(cl, "net.omobio.dialogsc.SecurityManagerAdvance",
-                "checkFridaPort", Boolean.FALSE);
-        bindIfPresent(cl, "net.omobio.dialogsc.SecurityManagerAdvance",
-                "checkFridaServer", Boolean.FALSE);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "isAdvancedRootDetected", Boolean.FALSE, Context.class);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "hasRootManagementApps", Boolean.FALSE, Context.class);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "isDeveloperOptionsEnabled", Boolean.FALSE, Context.class);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "isEmulatorEnvironment", Boolean.FALSE, Context.class);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "isHooked", Boolean.FALSE);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "isSSLPinningBypassed", Boolean.FALSE);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "isSystemTampered", Boolean.FALSE);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "isDebuggingDetected", Boolean.FALSE);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "isCodeTampered", Boolean.FALSE, Context.class);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "performRuntimeChecks", Boolean.FALSE, Context.class);
+        bindIfPresent(cl, "net.omobio.dialogsc.security.SecurityManager",
+                "verifyAppSignature", Boolean.TRUE, Context.class);
 
         summary(ver);
     }
@@ -366,10 +513,6 @@ public class Module implements IXposedHookLoadPackage {
 
     /**
      * App version, for the log.
-     *
-     * LSPosed hands us a null appInfo, hidden-API reflection on ActivityThread is
-     * blocked, and R8 renamed BuildConfig.VERSION_NAME -- so scan the app's own
-     * BuildConfig for the static String that looks like a version.
      */
     private static String version(ClassLoader cl, XC_LoadPackage.LoadPackageParam lp) {
         try {
